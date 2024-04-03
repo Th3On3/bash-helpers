@@ -16,7 +16,7 @@ fi
 # -- load funcs from os_win.ps1 as aliases --
 
 function _ps_call() {
-    powershell.exe -command "& { . $(wslpath -w $BH_DIR/os_win.ps1); $* }"
+    powershell.exe -noprofile -c "& { . $(wslpath -w $BH_DIR/os_win.ps1); $* }"
 }
 
 function _ps_def_func() {
