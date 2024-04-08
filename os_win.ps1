@@ -1,22 +1,40 @@
-# sudo calls on here require https://learn.microsoft.com/en-us/windows/sudo/ or https://github.com/gerardog/gsudo
-
 # -- essentials --
+
 
 function log_msg() { Write-Host -ForegroundColor DarkYellow "--" ($args -join " ") }
 function log_error() { Write-Host -ForegroundColor DarkRed "--" ($args -join " ") }
 function has_sudo() { if (Get-Command sudo -errorAction SilentlyContinue) { return $true } else { return $false } }
 
+function win_enable_sudo() {
+    if (-Not(Get-Command sudo -errorAction SilentlyContinue)) {
+        # win 11 support native sudo https://learn.microsoft.com/en-us/windows/sudo/
+        if ((Get-ComputerInfo | Select-Object -expand OsName) -match 11) {
+            sudo config --enable
+        }
+        # win 10 support from https://github.com/gerardog/gsudo
+        else {
+            winget install gsudo
+        }
+        win_path_refresh
+    }
+}
+
 function win_update() {
     log_msg "win_update"
     if (-Not (has_sudo)) { log_error "no sudo. skipping."; return }
-    log_msg "-- winget upgrade"
+    log_msg "> winget upgrade"
     winget upgrade --accept-package-agreements --accept-source-agreements --silent --all
-    log_msg "-- os upgrade"
+    log_msg "> os upgrade"
+    if (-Not (has_sudo)) { 
+        log_error "no sudo for os upgrade. starting settings manually"
+        explorer.exe ms-settings:windowsupdate-action
+    }
     sudo {
+        # https://gist.github.com/billpieper/a39173afa0b343a14ddeeb1d79ab14ea
         if (-Not(Get-Command Install-WindowsUpdate -errorAction SilentlyContinue)) {
-            Set-PSRepository PSGallery -InstallationPolicy Trusted
-            Install-Module -Name PSWindowsUpdate -Confirm:$false
-            Add-WUServiceManager -MicrosoftUpdate -Confirm:$false | Out-Null
+            Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+            Install-Module -Name PSWindowsUpdate -Scope CurrentUser -Force
+            # Add-WUServiceManager -MicrosoftUpdate -Confirm:$false | Out-Null
         }
         $(Install-WindowsUpdate -AcceptAll -IgnoreReboot) | Where-Object {
             if ($_ -is [string]) {
@@ -34,9 +52,16 @@ function win_install_ubuntu() {
 }
 
 function winget_install() {
-    winget list -q $Args | Out-Null
+    winget list -q $Args[0] | Out-Null
     if (-not $?) {
-        winget install --accept-package-agreements --accept-source-agreements --silent "$Args"
+        winget install $Args[0] --accept-package-agreements --accept-source-agreements --scope "user"
+    }
+}
+
+function winget_install_at_location() {
+    winget list -q $Args[0] | Out-Null
+    if (-not $?) {
+        winget install $Args[0] --accept-package-agreements --accept-source-agreements --scope "user" --location="$Args[1]"
     }
 }
 
@@ -96,6 +121,10 @@ function win_path_refresh() {
 # -- env  --
 
 function win_env_add($name, $value) {
+    [Environment]::SetEnvironmentVariable($name, $value, 'User')
+}
+
+function win_env_add_machine($name, $value) {
     if (-Not (has_sudo)) { log_error "no sudo. skipping."; return }
     sudo {
         [Environment]::SetEnvironmentVariable($name, $value, 'Machine')
@@ -294,24 +323,27 @@ function win_disable_sounds() {
 }
 
 function win_disable_web_search_and_widgets() {
-    # win 10
-    # https://www.bennetrichter.de/en/tutorials/windows-10-disable-web-search/
     log_msg "win_disable_web_search_and_widgets"
-    if (-Not (has_sudo)) { log_error "no sudo. skipping."; return }
-    $reg_search = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Search"
-    Set-ItemProperty -Path "$reg_search" -Name 'BingSearchEnabled' -Value '0' -Type 'DWORD'
-    $reg_search2 = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\SearchSettings'
-    Set-ItemProperty -Path "$reg_search2" -Name 'IsDynamicSearchBoxEnabled' -Value '0' -Type 'DWORD'
-
     # win 11
-    # https://www.tomshardware.com/how-to/disable-windows-web-search
-    sudo {
-        $reg_explorer_pols = "HKCU:\Software\Policies\Microsoft\Windows\Explorer"
-        New-Item -Path $reg_explorer_pols -Force | Out-Null
-        Set-ItemProperty -Path $reg_explorer_pols -Name 'DisableSearchBoxSuggestions' -Value '1' -Type 'DWORD'
+    if ((Get-ComputerInfo | Select-Object -expand OsName) -match 11) {
+        winget list -q "MicrosoftWindows.Client.WebExperience_cw5n1h2txyew" | Out-Null
+        if ($?) { winget.exe uninstall MicrosoftWindows.Client.WebExperience_cw5n1h2txyewy }
+        # https://www.tomshardware.com/how-to/disable-windows-web-search
+        if (-Not (has_sudo)) { log_error "no sudo. skipping DisableSearchBoxSuggestions at win 11 ."; return }
+        sudo {
+            $reg_explorer_pols = "HKCU:\Software\Policies\Microsoft\Windows\Explorer"
+            New-Item -Path $reg_explorer_pols -Force | Out-Null
+            Set-ItemProperty -Path $reg_explorer_pols -Name 'DisableSearchBoxSuggestions' -Value '1' -Type 'DWORD'
+        }
     }
-    winget list -q "MicrosoftWindows.Client.WebExperience_cw5n1h2txyew" | Out-Null
-    if ($?) { winget.exe uninstall MicrosoftWindows.Client.WebExperience_cw5n1h2txyewy }
+    else {
+        # win 10
+        # https://www.bennetrichter.de/en/tutorials/windows-10-disable-web-search/
+        $reg_search = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Search"
+        Set-ItemProperty -Path "$reg_search" -Name 'BingSearchEnabled' -Value '0' -Type 'DWORD'
+        $reg_search2 = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\SearchSettings'
+        Set-ItemProperty -Path "$reg_search2" -Name 'IsDynamicSearchBoxEnabled' -Value '0' -Type 'DWORD'
+    }
 }
 
 function win_disable_edge_ctrl_shift_c() {
@@ -319,8 +351,8 @@ function win_disable_edge_ctrl_shift_c() {
     if (-Not (has_sudo)) { log_error "no sudo. skipping."; return }
     sudo {
         $reg_edge_pol = "HKCU:\Software\Policies\Microsoft\Edge"
+        New-Item -Path $reg_edge_pol -Force | Out-Null
         if (-not (Get-ItemPropertyValue -Path $reg_edge_pol -Name 'ConfigureKeyboardShortcuts')) {
-            New-Item -Path $reg_edge_pol -Force | Out-Null
             Set-ItemProperty -Path $reg_edge_pol -Name 'ConfigureKeyboardShortcuts' -Value '{"disabled": ["dev_tools_elements"]}'
             gpupdate.exe /force
         }
